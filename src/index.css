@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0B0B0B;
+  --text: #FAFAFA;
+  --card: #141414;
+}
+
+[data-theme="light"] {
+  --bg: #FAFAFA;
+  --text: #0B0B0B;
+  --card: #EDEDED;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  margin: 0;
+  background-color: var(--bg);
+  color: var(--text);
+}
