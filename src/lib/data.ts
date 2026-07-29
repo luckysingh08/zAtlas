@@ -84,7 +84,7 @@ export function calcTaskTypePoints(chapters: (Chapter & { tasks: Task[] })[], ty
   const max = chapters.length * 5
   return { earned, max }
 }
-import { Plan, Attendance, AttendanceStatus } from '../types'
+import { Plan, Attendance, AttendanceStatus, Message, FileRecord, MessageType } from '../types'
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 export { DAYS }
@@ -116,6 +116,30 @@ export async function deletePlan(planId: string) {
   if (error) throw error
 }
 
+const calendarEventPrefix = '__zatlas_event__|'
+
+export interface CalendarEvent {
+  id: string
+  date: string
+  title: string
+  created_by: string | null
+}
+
+export function createCalendarEventText(date: string, title: string) {
+  return `${calendarEventPrefix}${date}|${encodeURIComponent(title.trim())}`
+}
+
+export function parseCalendarEvent(plan: Plan): CalendarEvent | null {
+  if (!plan.text.startsWith(calendarEventPrefix)) return null
+  const [, date, encodedTitle] = plan.text.split('|')
+  if (!date || !encodedTitle) return null
+  try {
+    return { id: plan.id, date, title: decodeURIComponent(encodedTitle), created_by: plan.created_by }
+  } catch {
+    return null
+  }
+}
+
 export async function getAttendance(groupId: string, monthStart: string, monthEnd: string): Promise<Attendance[]> {
   const { data, error } = await supabase
     .from('attendance')
@@ -142,8 +166,6 @@ export async function upsertAttendance(
     )
   if (error) throw error
 }
-import { Message, FileRecord, MessageType } from '../types'
-
 export async function getMessages(groupId: string, type: MessageType): Promise<Message[]> {
   const { data, error } = await supabase
     .from('messages')
@@ -155,10 +177,18 @@ export async function getMessages(groupId: string, type: MessageType): Promise<M
   return data as Message[]
 }
 
-export async function sendMessage(groupId: string, senderId: string, text: string, type: MessageType) {
-  const { error } = await supabase
+export async function sendMessage(groupId: string, senderId: string, text: string, type: MessageType): Promise<Message> {
+  const { data, error } = await supabase
     .from('messages')
     .insert({ group_id: groupId, sender_id: senderId, text, type })
+    .select()
+    .single()
+  if (error) throw error
+  return data as Message
+}
+
+export async function deleteMessage(messageId: string) {
+  const { error } = await supabase.from('messages').delete().eq('id', messageId)
   if (error) throw error
 }
 
@@ -172,18 +202,28 @@ export async function getFiles(groupId: string): Promise<FileRecord[]> {
   return data as FileRecord[]
 }
 
-export async function uploadFile(groupId: string, uploaderId: string, file: File) {
+export async function uploadFile(groupId: string, uploaderId: string, file: File): Promise<FileRecord> {
   const path = `${groupId}/${Date.now()}_${file.name}`
   const { error: uploadErr } = await supabase.storage.from('files').upload(path, file)
   if (uploadErr) throw uploadErr
 
-  const { error: insertErr } = await supabase
+  const { data, error: insertErr } = await supabase
     .from('files')
     .insert({ group_id: groupId, uploader_id: uploaderId, name: file.name, url: path })
+    .select()
+    .single()
   if (insertErr) {
     await supabase.storage.from('files').remove([path])
     throw insertErr
   }
+  return data as FileRecord
+}
+
+export async function deleteFile(file: FileRecord) {
+  const { error: storageError } = await supabase.storage.from('files').remove([file.url])
+  if (storageError) throw storageError
+  const { error } = await supabase.from('files').delete().eq('id', file.id)
+  if (error) throw error
 }
 
 export async function getFileDownloadUrl(path: string): Promise<string> {
