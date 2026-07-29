@@ -47,10 +47,34 @@ export default function Login() {
     setLoading(true)
     let completionError: Error | null = null
     if (groupMode === 'create') {
+      // A previously abandoned Join attempt can leave an ungrouped profile behind.
+      // Remove only that incomplete profile so the atomic database function can
+      // create the group and profile together as designed.
+      const { data: existingProfile, error: profileLookupError } = await supabase
+        .from('profiles')
+        .select('group_id')
+        .eq('id', session.user.id)
+        .maybeSingle()
+      if (profileLookupError) {
+        completionError = profileLookupError
+      } else if (existingProfile?.group_id) {
+        await refreshProfile()
+        setLoading(false)
+        navigate('/dashboard')
+        return
+      } else if (existingProfile) {
+        const { error: cleanupError } = await supabase.from('profiles').delete().eq('id', session.user.id)
+        if (cleanupError) completionError = cleanupError
+      }
+      if (completionError) {
+        setLoading(false)
+        setError('This account has an incomplete setup record. Please sign out and sign in again, then retry creating the group.')
+        return
+      }
       const { error } = await supabase.rpc('create_family_group', { p_name: name, p_role: role, p_group_name: group })
       completionError = error
     } else {
-      const { error: profileError } = await supabase.from('profiles').insert({ id: session.user.id, group_id: null, name, role })
+      const { error: profileError } = await supabase.from('profiles').upsert({ id: session.user.id, group_id: null, name, role }, { onConflict: 'id' })
       completionError = profileError
       if (!profileError) {
         const { error } = await supabase.rpc('join_group_by_code', { code: code.trim().toUpperCase() })
