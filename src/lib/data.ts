@@ -1,5 +1,15 @@
 import { supabase } from '../supabaseClient'
-import { Subject, Chapter, Task } from '../types'
+import { Group, Subject, Chapter, Task } from '../types'
+
+export async function getGroup(groupId: string): Promise<Group> {
+  const { data, error } = await supabase
+    .from('groups')
+    .select('id, name, invite_code')
+    .eq('id', groupId)
+    .single()
+  if (error) throw error
+  return data as Group
+}
 
 export async function getSubjects(groupId: string): Promise<Subject[]> {
   const { data, error } = await supabase
@@ -170,7 +180,10 @@ export async function uploadFile(groupId: string, uploaderId: string, file: File
   const { error: insertErr } = await supabase
     .from('files')
     .insert({ group_id: groupId, uploader_id: uploaderId, name: file.name, url: path })
-  if (insertErr) throw insertErr
+  if (insertErr) {
+    await supabase.storage.from('files').remove([path])
+    throw insertErr
+  }
 }
 
 export async function getFileDownloadUrl(path: string): Promise<string> {

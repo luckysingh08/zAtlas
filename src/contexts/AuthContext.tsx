@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
 import { Session, User } from '@supabase/supabase-js'
-import { supabase } from '../supabaseClient'
+import { isSupabaseConfigured, supabase } from '../supabaseClient'
 import { Profile } from '../types'
 
 interface AuthContextType {
@@ -19,11 +19,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   async function fetchProfile(userId: string) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('profiles')
       .select('*')
       .eq('id', userId)
       .maybeSingle()
+    if (error) {
+      console.error('Unable to load profile', error)
+      setProfile(null)
+      return
+    }
     setProfile(data as Profile | null)
   }
 
@@ -34,6 +39,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setLoading(false)
+      return
+    }
+
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       setSession(session)
       if (session?.user) {
@@ -43,10 +53,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
+      (_event, session) => {
         setSession(session)
         if (session?.user) {
-          await fetchProfile(session.user.id)
+          void fetchProfile(session.user.id)
         } else {
           setProfile(null)
         }

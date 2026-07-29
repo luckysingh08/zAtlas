@@ -2,7 +2,123 @@ import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../supabaseClient'
 import { getMessages, sendMessage, getFiles, uploadFile, getFileDownloadUrl } from '../lib/data'
-import { Message, FileRecord } from '../types'
+import { FileRecord, Message } from '../types'
 import AppShell, { Icon } from '../components/AppShell'
-type Tab='chat'|'files'|'alerts'
-export default function ChatFilesAlerts(){const{profile,user}=useAuth();const guardian=profile?.role==='guardian';const[tab,setTab]=useState<Tab>('chat'),[chat,setChat]=useState<Message[]>([]),[alerts,setAlerts]=useState<Message[]>([]),[text,setText]=useState(''),[alertText,setAlertText]=useState(''),[files,setFiles]=useState<FileRecord[]>([]),[uploading,setUploading]=useState(false);const input=useRef<HTMLInputElement>(null),end=useRef<HTMLDivElement>(null);async function load(){if(!profile?.group_id)return;const[c,a,f]=await Promise.all([getMessages(profile.group_id,'chat'),getMessages(profile.group_id,'alert'),getFiles(profile.group_id)]);setChat(c);setAlerts(a);setFiles(f)}useEffect(()=>{load()},[profile?.group_id]);useEffect(()=>{end.current?.scrollIntoView({behavior:'smooth'})},[chat]);useEffect(()=>{if(!profile?.group_id)return;const channel=supabase.channel(`messages-${profile.group_id}`).on('postgres_changes',{event:'INSERT',schema:'public',table:'messages',filter:`group_id=eq.${profile.group_id}`},({new:raw})=>{const m=raw as Message;m.type==='chat'?setChat(p=>[...p,m]):setAlerts(p=>[...p,m])}).subscribe();return()=>{supabase.removeChannel(channel)}},[profile?.group_id]);async function send(e:React.FormEvent, type:Tab='chat'){e.preventDefault();const value=type==='chat'?text:alertText;if(!profile?.group_id||!user||!value.trim())return;await sendMessage(profile.group_id,user.id,value.trim(),type==='alerts'?'alert':'chat');type==='chat'?setText(''):setAlertText('')}async function upload(e:React.ChangeEvent<HTMLInputElement>){const file=e.target.files?.[0];if(!file||!profile?.group_id||!user)return;setUploading(true);try{await uploadFile(profile.group_id,user.id,file);load()}finally{setUploading(false);if(input.current)input.current.value=''}}const tabs:[Tab,string][]=[['chat','Chat'],['files','Files'],['alerts','Alerts']];return <AppShell title="Stay in the loop." eyebrow="Shared space" variant="inbox"><section className="surface connect-layout"><aside className="connect-tabs">{tabs.map(([id,label])=><button className={`connect-tab ${tab===id?'active':''}`} onClick={()=>setTab(id)} key={id}><span className="tab-dot"/><span>{label}</span></button>)}</aside><main className="connect-main">{tab==='chat'&&<><div className="messages">{chat.map(m=><div className={`message ${m.sender_id===user?.id?'own':''}`} key={m.id}>{m.text}</div>)}{!chat.length&&<p className="empty">Your shared conversation starts here.</p>}<div ref={end}/></div><form className="form-row" onSubmit={e=>send(e)}><input className="field" placeholder="Write a note…" value={text} onChange={e=>setText(e.target.value)}/><button className="btn btn-primary">Send</button></form></>}{tab==='files'&&<><div className="subject-top"><div><h2 className="surface-title">Files</h2><p className="muted tiny">A single, shared reference shelf.</p></div><input ref={input} hidden type="file" onChange={upload}/><button className="btn btn-primary" onClick={()=>input.current?.click()}>{uploading?'Uploading…':'Upload file'}</button></div><div>{files.map(f=><div className="file-row" key={f.id}><div className="file-token"><span className="file-glyph">↗</span>{f.name}</div><button className="btn" onClick={async()=>window.open(await getFileDownloadUrl(f.url),'_blank')}>Open</button></div>)}{!files.length&&<p className="empty">Nothing has been shared yet.</p>}</div></>}{tab==='alerts'&&<><div className="subject-top"><div><h2 className="surface-title">Alerts</h2><p className="muted tiny">Important moments, kept simple.</p></div><Icon name="spark"/></div>{guardian&&<form className="form-row" onSubmit={e=>send(e,'alerts')}><input className="field" placeholder="Share an important update" value={alertText} onChange={e=>setAlertText(e.target.value)}/><button className="btn btn-primary">Send</button></form>}<div style={{marginTop:15}}>{alerts.map(a=><div className="alert-row" key={a.id}>{a.text}<span className="pill">Alert</span></div>)}{!alerts.length&&<p className="empty">No alerts right now.</p>}</div></>}</main></section></AppShell>}
+
+type Tab = 'chat' | 'files' | 'alerts'
+
+function appendMessage(items: Message[], message: Message) {
+  return items.some((item) => item.id === message.id) ? items : [...items, message]
+}
+
+export default function ChatFilesAlerts() {
+  const { profile, user } = useAuth()
+  const guardian = profile?.role === 'guardian'
+  const [tab, setTab] = useState<Tab>('chat')
+  const [chat, setChat] = useState<Message[]>([])
+  const [alerts, setAlerts] = useState<Message[]>([])
+  const [text, setText] = useState('')
+  const [alertText, setAlertText] = useState('')
+  const [files, setFiles] = useState<FileRecord[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const input = useRef<HTMLInputElement>(null)
+  const end = useRef<HTMLDivElement>(null)
+
+  async function load() {
+    if (!profile?.group_id) return
+    setError('')
+    try {
+      const [nextChat, nextAlerts, nextFiles] = await Promise.all([
+        getMessages(profile.group_id, 'chat'),
+        getMessages(profile.group_id, 'alert'),
+        getFiles(profile.group_id),
+      ])
+      setChat(nextChat)
+      setAlerts(nextAlerts)
+      setFiles(nextFiles)
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Could not load your shared space.')
+    }
+  }
+
+  async function enableNotifications() {
+    if (!('Notification' in window)) {
+      setError('Browser alerts are not supported in this browser.')
+      return
+    }
+    const permission = await Notification.requestPermission()
+    setNotice(permission === 'granted' ? 'Browser alerts are enabled for zAtlas.' : 'Browser alerts are currently blocked.')
+  }
+
+  useEffect(() => { void load() }, [profile?.group_id])
+  useEffect(() => { end.current?.scrollIntoView({ behavior: 'smooth' }) }, [chat])
+  useEffect(() => {
+    if (!profile?.group_id) return
+    const channel = supabase.channel(`messages-${profile.group_id}`).on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'messages', filter: `group_id=eq.${profile.group_id}` },
+      ({ new: raw }) => {
+        const message = raw as Message
+        if (message.type === 'chat') setChat((items) => appendMessage(items, message))
+        else {
+          setAlerts((items) => appendMessage(items, message))
+          if (message.sender_id !== user?.id && 'Notification' in window && Notification.permission === 'granted') {
+            new Notification('zAtlas alert', { body: message.text })
+          }
+        }
+      },
+    ).subscribe()
+    return () => { void supabase.removeChannel(channel) }
+  }, [profile?.group_id, user?.id])
+
+  async function send(event: React.FormEvent, type: Tab = 'chat') {
+    event.preventDefault()
+    const value = type === 'chat' ? text : alertText
+    if (!profile?.group_id || !user || !value.trim()) return
+    setError('')
+    try {
+      await sendMessage(profile.group_id, user.id, value.trim(), type === 'alerts' ? 'alert' : 'chat')
+      if (type === 'chat') setText('')
+      else setAlertText('')
+    } catch (sendError) {
+      setError(sendError instanceof Error ? sendError.message : 'Your message could not be sent.')
+    }
+  }
+
+  async function upload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file || !profile?.group_id || !user) return
+    setUploading(true)
+    setError('')
+    try {
+      await uploadFile(profile.group_id, user.id, file)
+      await load()
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : 'The file could not be uploaded.')
+    } finally {
+      setUploading(false)
+      if (input.current) input.current.value = ''
+    }
+  }
+
+  async function openFile(path: string) {
+    try {
+      const url = await getFileDownloadUrl(path)
+      window.open(url, '_blank', 'noopener,noreferrer')
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : 'The file could not be opened.')
+    }
+  }
+
+  const tabs: [Tab, string][] = [['chat', 'Chat'], ['files', 'Files'], ['alerts', 'Alerts']]
+  const canRequestNotifications = !guardian && 'Notification' in window && Notification.permission !== 'granted'
+
+  return <AppShell title="Stay in the loop." eyebrow="Shared space" variant="inbox"><section className="surface connect-layout"><aside className="connect-tabs">{tabs.map(([id, label]) => <button className={`connect-tab ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)} key={id}><span className="tab-dot" /><span>{label}</span></button>)}</aside><main className="connect-main">
+    {tab === 'chat' && <><div className="messages">{chat.map((message) => <div className={`message ${message.sender_id === user?.id ? 'own' : ''}`} key={message.id}>{message.text}</div>)}{!chat.length && <p className="empty">Your shared conversation starts here.</p>}<div ref={end} /></div><form className="form-row" onSubmit={(event) => void send(event)}><input className="field" placeholder="Write a note…" value={text} onChange={(event) => setText(event.target.value)} /><button className="btn btn-primary">Send</button></form></>}
+    {tab === 'files' && <><div className="subject-top"><div><h2 className="surface-title">Files</h2><p className="muted tiny">A single, shared reference shelf.</p></div><input ref={input} hidden type="file" onChange={(event) => void upload(event)} /><button className="btn btn-primary" onClick={() => input.current?.click()}>{uploading ? 'Uploading…' : 'Upload file'}</button></div><div>{files.map((file) => <div className="file-row" key={file.id}><div className="file-token"><span className="file-glyph">↗</span>{file.name}</div><button className="btn" onClick={() => void openFile(file.url)}>Open</button></div>)}{!files.length && <p className="empty">Nothing has been shared yet.</p>}</div></>}
+    {tab === 'alerts' && <><div className="subject-top"><div><h2 className="surface-title">Alerts</h2><p className="muted tiny">Important moments, kept simple.</p></div><Icon name="spark" /></div>{guardian && <form className="form-row" onSubmit={(event) => void send(event, 'alerts')}><input className="field" placeholder="Share an important update" value={alertText} onChange={(event) => setAlertText(event.target.value)} /><button className="btn btn-primary">Send</button></form>}{canRequestNotifications && <button className="btn" onClick={() => void enableNotifications()}>Enable browser alerts</button>}<div style={{ marginTop: 15 }}>{alerts.map((alert) => <div className="alert-row" key={alert.id}>{alert.text}<span className="pill">Alert</span></div>)}{!alerts.length && <p className="empty">No alerts right now.</p>}</div></>}
+    {notice && <p className="notice">{notice}</p>}{error && <p className="error">{error}</p>}
+  </main></section></AppShell>
+}
