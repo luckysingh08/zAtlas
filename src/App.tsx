@@ -19,12 +19,13 @@ function AppRoutes() {
   }
 
   const isFullyOnboarded = session && profile && profile.group_id
+  const isPasswordRecovery = new URLSearchParams(window.location.search).get('mode') === 'reset'
 
   return (
     <Routes>
       <Route
         path="/login"
-        element={isFullyOnboarded ? <Navigate to="/dashboard" replace /> : <Login />}
+        element={isFullyOnboarded && !isPasswordRecovery ? <Navigate to="/dashboard" replace /> : <Login />}
       />
       <Route
         path="/dashboard"
