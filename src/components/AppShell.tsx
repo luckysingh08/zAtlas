@@ -1,8 +1,9 @@
-import { ReactNode } from 'react'
-import { NavLink, useNavigate } from 'react-router-dom'
+import { ReactNode, useEffect, useState } from 'react'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 import { supabase } from '../supabaseClient'
+import { getFiles, getMessages } from '../lib/data'
 
 type IconName = 'home' | 'plan' | 'inbox' | 'settings' | 'arrow' | 'plus' | 'spark'
 
@@ -27,6 +28,31 @@ export default function AppShell({ title, eyebrow, children, variant = 'atlas', 
   const { profile } = useAuth()
   const { theme, toggleTheme } = useTheme()
   const navigate = useNavigate()
+  const location = useLocation()
+  const [hasUpdates, setHasUpdates] = useState(false)
+  const seenKey = profile?.group_id && profile?.id ? `zatlas-seen-${profile.group_id}-${profile.id}` : ''
+
+  useEffect(() => {
+    if (!profile?.group_id || !profile.id || !seenKey) return
+    if (location.pathname === '/messages') {
+      localStorage.setItem(seenKey, new Date().toISOString())
+      setHasUpdates(false)
+      return
+    }
+    async function checkForUpdates() {
+      try {
+        const since = localStorage.getItem(seenKey) || new Date(0).toISOString()
+        const [chat, alerts, files] = await Promise.all([getMessages(profile!.group_id!, 'chat'), getMessages(profile!.group_id!, 'alert'), getFiles(profile!.group_id!)])
+        setHasUpdates([...chat, ...alerts].some((item) => item.sender_id !== profile!.id && item.created_at > since) || files.some((item) => item.uploader_id !== profile!.id && item.uploaded_at > since))
+      } catch { /* The Connect page will display the detailed error if data is unavailable. */ }
+    }
+    void checkForUpdates()
+    const channel = supabase.channel(`sidebar-updates-${profile.group_id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `group_id=eq.${profile.group_id}` }, (payload) => { if ((payload.new as { sender_id?: string }).sender_id !== profile.id) setHasUpdates(true) })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'files', filter: `group_id=eq.${profile.group_id}` }, (payload) => { if ((payload.new as { uploader_id?: string }).uploader_id !== profile.id) setHasUpdates(true) })
+      .subscribe()
+    return () => { void supabase.removeChannel(channel) }
+  }, [profile?.group_id, profile?.id, location.pathname, seenKey])
   const items = [
     { to: '/dashboard', label: 'Overview', icon: 'home' as IconName },
     { to: '/planner', label: 'Planner', icon: 'plan' as IconName },
@@ -36,7 +62,7 @@ export default function AppShell({ title, eyebrow, children, variant = 'atlas', 
   return <main className="app-shell"><Ambient variant={variant} />
     <aside className="sidebar">
       <button className="brand" onClick={() => navigate('/dashboard')}><span className="brand-mark">z</span><span>Atlas</span></button>
-      <nav className="side-nav">{items.map(item => <NavLink key={item.to} to={item.to} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-icon"><Icon name={item.icon} /></span><span>{item.label}</span></NavLink>)}</nav>
+      <nav className="side-nav">{items.map(item => <NavLink key={item.to} to={item.to} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}><span className="nav-icon"><Icon name={item.icon} />{item.to === '/messages' && hasUpdates && <b className="nav-notice" />}</span><span>{item.label}</span></NavLink>)}</nav>
       <div className="sidebar-bottom"><button className="profile-mini" onClick={() => navigate('/settings')}><span>{profile?.name?.slice(0, 1).toUpperCase() || 'Z'}</span><small>{profile?.role || 'member'}</small></button><button className="side-utility" onClick={toggleTheme} aria-label="Toggle theme">{theme === 'dark' ? '☼' : '◐'}</button><button className="side-utility" onClick={() => supabase.auth.signOut()} aria-label="Sign out">↗</button></div>
     </aside>
     <section className="workspace"><header className="page-head"><div><p className="eyebrow">{eyebrow || 'Your private learning space'}</p><h1>{title}</h1></div><div className="page-action">{action}</div></header>{children}</section>

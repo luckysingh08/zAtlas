@@ -1,5 +1,5 @@
 import { supabase } from '../supabaseClient'
-import { Group, Subject, Chapter, Task } from '../types'
+import { Group, GroupMember, Subject, Chapter, Task, ChapterProgress, TaskType } from '../types'
 
 export async function getGroup(groupId: string): Promise<Group> {
   const { data, error } = await supabase
@@ -21,19 +21,41 @@ export async function getSubjects(groupId: string): Promise<Subject[]> {
   return data as Subject[]
 }
 
-export async function getChaptersWithTasks(subjectId: string) {
+export async function getGroupMembers(groupId: string): Promise<GroupMember[]> {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, group_id, name, role, avatar_url')
+    .eq('group_id', groupId)
+    .order('role')
+    .order('name')
+  if (error) throw error
+  return data as GroupMember[]
+}
+
+export async function getChaptersWithTasks(subjectId: string): Promise<ChapterProgress[]> {
   const { data, error } = await supabase
     .from('chapters')
     .select('*, tasks(*)')
     .eq('subject_id', subjectId)
     .order('order_index')
   if (error) throw error
-  return data as (Chapter & { tasks: Task[] })[]
+  return data as ChapterProgress[]
 }
 
 export async function createSubject(groupId: string, name: string, color: string) {
   const { error } = await supabase.from('subjects').insert({ group_id: groupId, name, color })
   if (error) throw error
+}
+
+export async function updateSubject(subjectId: string, name: string) {
+  const { error } = await supabase.from('subjects').update({ name }).eq('id', subjectId)
+  if (error) throw error
+}
+
+export async function deleteSubject(subjectId: string) {
+  const { data, error } = await supabase.from('subjects').delete().eq('id', subjectId).select('id').maybeSingle()
+  if (error) throw error
+  if (!data) throw new Error('This subject could not be deleted. Please try again.')
 }
 
 export async function createChapter(subjectId: string, name: string, orderIndex: number) {
@@ -53,15 +75,66 @@ export async function createChapter(subjectId: string, name: string, orderIndex:
   if (taskErr) throw taskErr
 }
 
+export async function updateChapter(chapterId: string, name: string) {
+  const { error } = await supabase.from('chapters').update({ name }).eq('id', chapterId)
+  if (error) throw error
+}
+
+export async function deleteChapter(chapterId: string) {
+  const { data, error } = await supabase.from('chapters').delete().eq('id', chapterId).select('id').maybeSingle()
+  if (error) throw error
+  if (!data) throw new Error('This chapter could not be deleted. Please try again.')
+}
+
 export async function toggleTask(taskId: string, done: boolean, userId: string) {
   const { error } = await supabase
     .from('tasks')
     .update({
       done,
-      completed_by: done ? userId : null,
+      // Keep the task owner even when it is unchecked. This allows every student
+      // in a shared group to keep an independent progress record.
+      completed_by: userId,
       completed_at: done ? new Date().toISOString() : null,
     })
     .eq('id', taskId)
+  if (error) throw error
+}
+
+export function taskTypesForChapters(chapters: ChapterProgress[]): TaskType[] {
+  const types = new Set<TaskType>(['lecture', 'hw', 'dpp'])
+  chapters.forEach((chapter) => chapter.tasks.forEach((task) => types.add(task.type)))
+  return [...types]
+}
+
+export function tasksForStudent(chapter: ChapterProgress, studentId: string): Task[] {
+  const result: Task[] = []
+  taskTypesForChapters([chapter]).forEach((type) => {
+    const owned = chapter.tasks.find((task) => task.type === type && task.completed_by === studentId)
+    const template = chapter.tasks.find((task) => task.type === type)
+    if (owned) result.push(owned)
+    else if (template) result.push({ ...template, id: '', done: false, completed_by: studentId, completed_at: null })
+  })
+  return result
+}
+
+export function progressForStudent(chapters: ChapterProgress[], studentId: string): ChapterProgress[] {
+  return chapters.map((chapter) => ({ ...chapter, tasks: tasksForStudent(chapter, studentId) }))
+}
+
+export async function setStudentTaskProgress(chapter: ChapterProgress, type: TaskType, done: boolean, userId: string) {
+  const existing = chapter.tasks.find((task) => task.type === type && task.completed_by === userId)
+  if (existing) return toggleTask(existing.id, done, userId)
+
+  const template = chapter.tasks.find((task) => task.type === type)
+  if (!template) throw new Error('This learning task is not available.')
+  const { error } = await supabase.from('tasks').insert({
+    chapter_id: chapter.id,
+    type,
+    points: template.points,
+    done,
+    completed_by: userId,
+    completed_at: done ? new Date().toISOString() : null,
+  })
   if (error) throw error
 }
 
@@ -188,8 +261,9 @@ export async function sendMessage(groupId: string, senderId: string, text: strin
 }
 
 export async function deleteMessage(messageId: string) {
-  const { error } = await supabase.from('messages').delete().eq('id', messageId)
+  const { data, error } = await supabase.from('messages').delete().eq('id', messageId).select('id').maybeSingle()
   if (error) throw error
+  if (!data) throw new Error('The message was not deleted. Check your group permissions and try again.')
 }
 
 export async function getFiles(groupId: string): Promise<FileRecord[]> {
@@ -220,10 +294,11 @@ export async function uploadFile(groupId: string, uploaderId: string, file: File
 }
 
 export async function deleteFile(file: FileRecord) {
-  const { error: storageError } = await supabase.storage.from('files').remove([file.url])
-  if (storageError) throw storageError
-  const { error } = await supabase.from('files').delete().eq('id', file.id)
+  const { data, error } = await supabase.from('files').delete().eq('id', file.id).select('id').maybeSingle()
   if (error) throw error
+  if (!data) throw new Error('The file was not deleted. Check your group permissions and try again.')
+  const { error: storageError } = await supabase.storage.from('files').remove([file.url])
+  if (storageError) console.warn('The file record was deleted, but its stored copy could not be removed.', storageError)
 }
 
 export async function getFileDownloadUrl(path: string): Promise<string> {

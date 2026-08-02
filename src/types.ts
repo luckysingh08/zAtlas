@@ -11,6 +11,10 @@ export interface Profile {
   avatar_url: string | null
 }
 
+export interface GroupMember extends Profile {
+  email?: string | null
+}
+
 export interface Group {
   id: string
   name: string
@@ -40,6 +44,8 @@ export interface Task {
   completed_by: string | null
   completed_at: string | null
 }
+
+export type ChapterProgress = Chapter & { tasks: Task[] }
 
 export interface Plan {
   id: string
